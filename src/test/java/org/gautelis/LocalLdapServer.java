@@ -145,6 +145,12 @@ public class LocalLdapServer {
             entry.add("userPassword", "{SHA}Ho1UWt+Ko+FWSbW26BviIp7iaGk=".getBytes()); // "notsosecret"
         });
 
+        // --- Systems base ---
+        addEntry("ou=Systems,dc=test", entry -> {
+            entry.add("objectClass", "organizationalUnit");
+            entry.add("ou", "Systems");
+        });
+
 
         // Index attributes in the partition
         addIndex((JdbmPartition) partition, "objectClass", "ou", "cn", "uid", "member");

@@ -26,8 +26,8 @@ This project proposes:
 - User → Role participation (within a system)
 - Group → Role participation (within a system)
 
-Membership and participation are represented as dedicated LDAP entries with:
-- `objectClass = groupMember`
+ Membership and participation are represented as dedicated LDAP entries with:
+- `objectClass = groupOfNames`
 - `cn = <principalId>`
 - `member = <principal DN>`
 
@@ -119,7 +119,7 @@ A user is a member of a global group, if there exists:
 
 ```
 cn=<userId>,ou=<groupId>,ou=Groups,dc=...
-  objectClass: groupMember
+  objectClass: groupOfNames
   cn: <userId>
   member: cn=<userId>,ou=Users,dc=...
 ```
@@ -130,7 +130,7 @@ A principal (user or group) participates in a role, if there exists:
 
 ```
 cn=<principalId>,ou=<roleId>,ou=Roles,ou=<systemName>,ou=Systems,dc=...
-  objectClass: groupMember
+  objectClass: groupOfNames
   cn: <principalId>
   member: <principalDN>
 ```
@@ -147,3 +147,13 @@ Given user-ID and user-DN, `groupsAndRolesAnalysis` computes:
 Net result: 
 
 `effective roles per system` = `direct roles` ∪ `roles granted to any global group the user belongs to`.
+
+## Testing
+
+Run tests with the embedded ApacheDS server:
+
+```
+mvn test
+```
+
+Note: the tests start a local LDAP server on port `10389`.
