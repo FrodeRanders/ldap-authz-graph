@@ -38,21 +38,21 @@ dc=example,dc=org
   │     └── cn=   (inetOrgPerson, …)
   ├── ou=Groups
   │     └── ou=   (organizationalUnit or group container)
-  │           └── cn=   (groupMember; member=)
+  │           └── cn=   (groupOfNames; member=)
   └── ou=Systems
         └── ou=   (organizationalUnit)
               └── ou=Roles
                     └── ou=   (organizationalUnit or role container)
-                          ├── cn=   (groupMember; member=)
-                          └── cn=   (groupMember; member=)
+                          ├── cn=   (groupOfNames; member=)
+                          └── cn=   (groupOfNames; member=)
 ```
 
 ## Effective access derivation
 
 For a given user:
-1. Find global groups where `(objectClass=groupMember AND memberObject=<userDN>)`.
-2. Find direct roles in any system where `(objectClass=groupMember AND memberObject=<userDN>)`.
-3. Find indirect roles where `(objectClass=groupMember AND memberObject IN <groupDNs>)`.
+1. Find global groups where `(objectClass=groupOfNames AND member=<userDN>)`.
+2. Find direct roles in any system where `(objectClass=groupOfNames AND member=<userDN>)`.
+3. Find indirect roles where `(objectClass=groupOfNames AND member IN <groupDNs>)`.
 
 The union of (2) and (3) yields **effective roles per system**.
 
@@ -140,7 +140,7 @@ cn=<principalId>,ou=<roleId>,ou=Roles,ou=<systemName>,ou=Systems,dc=...
 `ApplicationDomain::groupsAndRolesAnalysis` calculates effective access.
 
 Given user-ID and user-DN, `groupsAndRolesAnalysis` computes:
-1.	**Global groups**: deep search under groups-context for `(&(objectClass=groupMember)(member=<userDn>))`. Extracts group-id from the DN structure.
+1.	**Global groups**: deep search under groups-context for `(&(objectClass=groupOfNames)(member=<userDn>))`. Extracts group-id from the DN structure.
 2.	**Direct roles**: deep search under systems-context using the same `member=<userDn>` filter. Extracts system-name and role-name from DN structure.
 3.	**Indirect roles via groups**: builds an OR filter of the user’s group DNs as `member=<groupDn>` and deep searches under systems-context. Extracts system-name and role-name again.
 

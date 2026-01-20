@@ -763,7 +763,7 @@ public class ApplicationDomain {
 
         //------------------------------------------------------------------------
         // Global groups live under "ou=Groups, dc=test".
-        // Strategy: Compose a DN for a user groupMember and try to locate it.
+        // Strategy: Compose a DN and try to locate it.
         //------------------------------------------------------------------------
         String dn;
         if (groupName.startsWith("ou=")) {
@@ -937,8 +937,8 @@ public class ApplicationDomain {
         /* --------------------------------------------------------------------------------
          * Determine list of global group memberships
          *
-         * Membership is determined by a having a groupMember object under the
-         * global group with memberObject = user DN.
+         * Membership is determined by a having a groupOfNames object under the
+         * global group with member = user DN.
          *
          * The result is a list of "simple" group names (and not DNs to these groups)
          * -------------------------------------------------------------------------------*/
@@ -967,8 +967,8 @@ public class ApplicationDomain {
         /* --------------------------------------------------------------------------------
          * Determine list of direct role participations for user
          *
-         * Direct participation is determined by a having a groupMember object under the
-         * global group with memberObject = user DN.
+         * Direct participation is determined by a having a groupOfNames object under the
+         * global group with member = user DN.
          *
          * The result is a hashtable (hashed on system name) with lists of "simple"
          * role names (and not DNs to these roles).
@@ -1003,8 +1003,8 @@ public class ApplicationDomain {
         /* --------------------------------------------------------------------------------
          * Determine list of indirect role participations for groups that user is part of
          *
-         * Indirect participation is determined by a having a groupMember object under the
-         * global group with memberObject = group DN (and not the user DN). Since we haven't
+         * Indirect participation is determined by a having a groupOfNames object under the
+         * global group with member = group DN (and not the user DN). Since we haven't
          * stored the group DN (from above), we will recreate these using groupDNTemplate.
          *
          * The result is a hashtable (hashed on system name) with lists of "simple"
