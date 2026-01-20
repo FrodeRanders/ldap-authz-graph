@@ -105,7 +105,7 @@ public class LocalLdapServer {
         });
 
         // User needed in order to search in the directory, not for logging in.
-        addEntry("uid=searcher,dc=test", entry -> {
+        addEntry("uid=Searcher,dc=test", entry -> {
             entry.add("objectClass", "top", "inetOrgPerson", "organizationalPerson", "person");
             entry.add("uid", "searcher");
             entry.add("cn", "Search");
