@@ -26,12 +26,7 @@ import java.util.Collection;
 import java.util.Hashtable;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class LdapTest {
     @RegisterExtension
@@ -104,7 +99,7 @@ public class LdapTest {
                 fail(e.getMessage());
             }
 
-            assertTrue(appDomain.findObjectByDn(membershipDn) != null);
+            assertNotNull(appDomain.findObjectByDn(membershipDn));
             assertTrue(appDomain.globalGroupExists(groupId));
             assertFalse(appDomain.globalGroupExists("MissingGroup"));
             assertTrue(appDomain.isMemberOfGlobalGroup(userId, groupId));
@@ -130,7 +125,7 @@ public class LdapTest {
             String userId = "tester";
             String roleId = "Reader";
             String participationDn = appDomain.assignUserToRole(userId, roleId, systemName);
-            assertTrue(appDomain.findObjectByDn(participationDn) != null);
+            assertNotNull(appDomain.findObjectByDn(participationDn));
 
             Collection<String> users = appDomain.getUsersInRole(roleId, systemName);
             assertTrue(users.contains(userId));
@@ -156,7 +151,7 @@ public class LdapTest {
             String groupId = "Administrators";
             String roleId = "Administrator";
             String participationDn = appDomain.assignGroupToRole(groupId, roleId, systemName);
-            assertTrue(appDomain.findObjectByDn(participationDn) != null);
+            assertNotNull(appDomain.findObjectByDn(participationDn));
 
             Collection<String> users = appDomain.getUsersInRole(roleId, systemName);
             assertTrue(users.contains(groupId));
@@ -200,7 +195,7 @@ public class LdapTest {
             assertTrue(roles.get(systemName).contains(roleId));
 
             String participationDn = LdapAdapter.compose(appDomain.groupInRoleDNTemplate, groupId, roleId, systemName);
-            assertTrue(appDomain.findObjectByDn(participationDn) != null);
+            assertNotNull(appDomain.findObjectByDn(participationDn));
         }
         catch (ConfigurationException | DirectoryException | InvalidParameterException e) {
             fail(e.getMessage());

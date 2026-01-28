@@ -42,13 +42,6 @@ public class ApplicationDomain {
 
 
     /**
-     * Base distinguished name.
-     * A typical value is
-     * <I>"dc=test"</I>
-     */
-    // public static final String LDAP_BASE_DN = "LDAP_BASE_DN";
-
-    /**
      * The systems context
      * <p/>
      * A typical value is
@@ -88,22 +81,6 @@ public class ApplicationDomain {
      * <I>"user"</I>
      */
     public static final String LDAP_USER_OBJECT_CLASS = "LDAP_USER_OBJECT_CLASS";
-
-    /**
-     * The system administration role distinguished name template
-     * <p/>
-     * A typical value is
-     * <I>"ou=Administrator,ou=Roles,ou=%s,ou=Systems,dc=test"</I>
-     */
-    public static final String LDAP_ADMIN_ROLE_DN_TEMPLATE = "LDAP_ADMIN_ROLE_DN_TEMPLATE";
-
-    /**
-     * The archive user role distinguished name template
-     * <P>
-     * A typical value is
-     * <I>"ou=User,ou=Roles,ou=%s,ou=Systems,dc=test"</I>
-     */
-    public static final String LDAP_USER_ROLE_DN_TEMPLATE = "LDAP_USER_ROLE_DN_TEMPLATE";
 
     /**
      * The archive specific role distinguished name template
@@ -258,38 +235,6 @@ public class ApplicationDomain {
     public static final String LDAP_USER_LAST_NAME = "LDAP_USER_LAST_NAME";
 
     /**
-     * The user language attribute name
-     * <p/>
-     * A typical value is
-     * <I>"language"</I>
-     */
-    public static final String LDAP_USER_LANGUAGE = "LDAP_USER_LANGUAGE";
-
-    /**
-     * The user authorization level attribute name
-     * <p/>
-     * A typical value is
-     * <I>"authorizationLevel"</I>
-     */
-    public static final String LDAP_USER_AUTHORIZATION_LEVEL = "LDAP_USER_AUTHORIZATION_LEVEL";
-
-    /**
-     * The user user interface detail level attribute name
-     * <p/>
-     * A typical value is
-     * <I>"uiDetailLevel"</I>
-     */
-    public static final String LDAP_USER_UI_DETAIL_LEVEL = "LDAP_USER_UI_DETAIL_LEVEL";
-
-    /**
-     * The user email attribute name
-     * <p/>
-     * A typical value is
-     * <I>"mail"</I>
-     */
-    public static final String LDAP_USER_MAIL = "LDAP_USER_MAIL";
-
-    /**
      * The global group id attribute name
      * <p/>
      * A typical value is
@@ -313,28 +258,14 @@ public class ApplicationDomain {
      */
     public static final String LDAP_SYSTEM_NAME_ATTRIBUTE = "LDAP_SYSTEM_NAME_ATTRIBUTE";
 
-    /**
-     * The name of the Administrator role
-     */
-    public final static String ADMINISTRATOR_ROLE = "Administrator";
-
-    /**
-     * The name of the User role
-     */
-    public final static String USER_ROLE = "User";
-
-    /**
-     * The name of the global administrators group
-     */
-    public final static String ADMINISTRATORS_GROUP = "Administrators";
 
     //------------------------------------------------------------------------
     private final static Rdn[] RdnT = {};
 
     // System
     protected final String systemDNTemplate;
-    protected final String systemSearchFilter;
-    protected final String systemNameAttribute;
+    protected final String systemSearchFilter; //
+    protected final String systemNameAttribute; //
 
     // Object classes
     protected final String userObjectClass;
@@ -342,33 +273,33 @@ public class ApplicationDomain {
 
     // User
     protected final String userDNTemplate;
-    protected final String userSearchFilter;
+    protected final String userSearchFilter; //
 
     // Foreign users
-    protected final String foreignUserDNTemplate;
-    protected final String foreignDomainDNTemplate;
+    protected final String foreignUserDNTemplate; //
+    protected final String foreignDomainDNTemplate; //
 
     // User attributes names
     protected final String userIdAttribute;
-    protected final String passwordAttribute;
-    protected final String firstNameAttribute;
-    protected final String lastNameAttribute;
+    protected final String passwordAttribute; //
+    protected final String firstNameAttribute; //
+    protected final String lastNameAttribute; //
 
     // Membership attribute name
     protected final String membershipAttribute;
 
     // Role
     protected final String roleDNTemplate;
-    protected final String roleSearchFilter;
+    protected final String roleSearchFilter; //
     protected final String userInRoleDNTemplate;
     protected final String groupInRoleDNTemplate;
 
     // Group
     protected final String groupDNTemplate;
-    protected final String groupSearchFilter;
+    protected final String groupSearchFilter; //
     protected final String userInGroupDNTemplate;
     protected final String groupIdAttribute;
-    protected final String groupDescriptionAttribute;
+    protected final String groupDescriptionAttribute; //
 
     // Roles
     protected final String rolesDNTemplate;

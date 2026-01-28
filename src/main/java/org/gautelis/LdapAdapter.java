@@ -33,6 +33,7 @@ import org.slf4j.LoggerFactory;
 import java.util.Collection;
 import java.util.LinkedList;
 import java.util.Map;
+import java.util.Objects;
 
 
 /**
@@ -104,7 +105,7 @@ public class LdapAdapter implements AutoCloseable {
 
         // LDAP server hostname
         String _host = config.getOrDefault(LDAP_HOST, "localhost");
-        if (null == _host || _host.length() == 0) {
+        if (null == _host || _host.isEmpty()) {
             // Not likely to happen, given that we have a default value
             throw new ConfigurationException("No LDAP server host was provided");
         }
@@ -113,7 +114,7 @@ public class LdapAdapter implements AutoCloseable {
 
         // LDAP server port
         String _port = config.getOrDefault(LDAP_PORT, "389");
-        if (null == _port || _port.length() == 0) {
+        if (null == _port || _port.isEmpty()) {
             // Not likely to happen, given that we have a default value
             String info = "No LDAP server port was provided";
             throw new ConfigurationException(info);
@@ -191,17 +192,13 @@ public class LdapAdapter implements AutoCloseable {
         catch (LdapSchemaViolationException e) {
             String info = "Could not create object since it violates the schema: ";
             Dn dn = e.getResolvedDn();
-            if (null != dn && dn.getName().length() > 0) {
+            if (null != dn && !dn.getName().isEmpty()) {
                 info += "dn=\"" + dn.toString() + "\", ";
             }
             ResultCodeEnum rc = e.getResultCode();
             info += "result-code=" + rc.getResultCode() + " (" + rc.getMessage() + "): ";
             Throwable cause = e.getCause();
-            if (null != cause) {
-                info += cause.getMessage();
-            } else {
-                info += e.getMessage();
-            }
+            info += Objects.requireNonNullElse(cause, e).getMessage();
             throw new DirectoryWriteException(info, e);
         }
         catch (Throwable t) {
@@ -453,7 +450,7 @@ public class LdapAdapter implements AutoCloseable {
      */
     public static String compose(String template, String... components) throws ConfigurationException {
 
-        if (null == template || template.length() == 0) {
+        if (null == template || template.isEmpty()) {
             String info = "No distinguished name template was provided";
             throw new ConfigurationException(info);
         }
