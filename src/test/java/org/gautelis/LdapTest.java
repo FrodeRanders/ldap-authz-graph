@@ -22,15 +22,78 @@ import org.apache.directory.api.ldap.model.name.Dn;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
-import java.util.Collection;
-import java.util.Hashtable;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 public class LdapTest {
     @RegisterExtension
-    static final LocalLdapServerExtension LDAP_SERVER = new LocalLdapServerExtension();
+    final LocalLdapServerExtension ldapServer = new LocalLdapServerExtension();
+
+    private ApplicationDomain newDomain(LdapAdapter adapter) throws ConfigurationException {
+        return new ApplicationDomain(domainConfig(), adapter);
+    }
+
+    private void ensureSystemExists(ApplicationDomain appDomain, String systemName)
+            throws ConfigurationException, DirectoryException {
+        if (!appDomain.systemExists(systemName)) {
+            appDomain.createSystem(systemName);
+        }
+    }
+
+    private void ensureUserExists(ApplicationDomain appDomain, LdapAdapter adapter, String userId, String cn, String sn)
+            throws ConfigurationException, DirectoryException {
+        String userDn = "uid=" + LdapAdapter.escapeDnValue(userId) + ",ou=Users,dc=test";
+        try {
+            if (appDomain.findObjectByDn(userDn) == null) {
+                DefaultEntry userEntry = new DefaultEntry(new Dn(userDn));
+                userEntry.add("objectClass", "top", "inetOrgPerson", "organizationalPerson", "person");
+                userEntry.add("uid", userId);
+                userEntry.add("cn", cn);
+                userEntry.add("sn", sn);
+                adapter.createObject(userEntry);
+            }
+        }
+        catch (org.apache.directory.api.ldap.model.exception.LdapException e) {
+            fail(e.getMessage());
+        }
+    }
+
+    private void ensureGroupExists(ApplicationDomain appDomain, LdapAdapter adapter, String groupId)
+            throws ConfigurationException, DirectoryException {
+        String groupDn = "ou=" + LdapAdapter.escapeDnValue(groupId) + ",ou=Groups,dc=test";
+        try {
+            if (appDomain.findObjectByDn(groupDn) == null) {
+                DefaultEntry groupEntry = new DefaultEntry(new Dn(groupDn));
+                groupEntry.add("objectClass", "organizationalUnit");
+                groupEntry.add("ou", groupId);
+                adapter.createObject(groupEntry);
+            }
+        }
+        catch (org.apache.directory.api.ldap.model.exception.LdapException e) {
+            fail(e.getMessage());
+        }
+    }
+
+    private void ensureUserInGroup(ApplicationDomain appDomain, LdapAdapter adapter, String userId, String groupId)
+            throws ConfigurationException, DirectoryException {
+        String membershipDn = "cn=" + LdapAdapter.escapeDnValue(userId) + ",ou=" +
+                LdapAdapter.escapeDnValue(groupId) + ",ou=Groups,dc=test";
+        String userDn = "uid=" + LdapAdapter.escapeDnValue(userId) + ",ou=Users,dc=test";
+        try {
+            if (appDomain.findObjectByDn(membershipDn) == null) {
+                DefaultEntry membership = new DefaultEntry(new Dn(membershipDn));
+                membership.add("objectClass", "groupOfNames");
+                membership.add("cn", userId);
+                membership.add("member", userDn);
+                adapter.createObject(membership);
+            }
+        }
+        catch (org.apache.directory.api.ldap.model.exception.LdapException e) {
+            fail(e.getMessage());
+        }
+    }
 
     private Map<String, String> adapterConfig() {
         return Map.of(
@@ -57,21 +120,27 @@ public class LdapTest {
     @Test
     public void testFindingUser() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             String userId = "tester"; // See line 122 in LocalLdapServer.java
-            System.out.println("Looking for user with id = " + userId);
-            System.out.println("  by means of ApplicationDomain::findUserDn()");
-            System.out.println("  using the (configurable) parameters:");
-            System.out.println("    userObjectClass = '" + appDomain.userObjectClass + "'");
-            System.out.println("    userIdAttribute = '" + appDomain.userIdAttribute + "'");
-            System.out.println("    usersContext = '" + appDomain.usersContext + "'");
-
-
             String userDn = appDomain.findUserDn(userId);
-            System.out.println("Found '" + userId + "' to be '" + userDn + "' (a distinguished name)");
-            System.out.println();
+            assertEquals("uid=tester,ou=Users,dc=test", userDn);
+        }
+        catch (ConfigurationException | DirectoryException e) {
+            fail(e.getMessage());
+        }
+    }
+
+    @Test
+    public void testFindingUserEscapesFilterCharacters() {
+        try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
+            ApplicationDomain appDomain = newDomain(adapter);
+
+            String userId = "literal*)(uid=*";
+            ensureUserExists(appDomain, adapter, userId, "Escaped", "Filter");
+            String userDn = "uid=" + LdapAdapter.escapeDnValue(userId) + ",ou=Users,dc=test";
+
+            assertEquals(userDn, appDomain.findUserDn(userId));
         }
         catch (ConfigurationException | DirectoryException e) {
             fail(e.getMessage());
@@ -81,31 +150,20 @@ public class LdapTest {
     @Test
     public void testGlobalGroupsAndMembership() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             String userId = "tester";
             String groupId = "Administrators";
+            ensureUserInGroup(appDomain, adapter, userId, groupId);
             String membershipDn = "cn=" + userId + ",ou=" + groupId + ",ou=Groups,dc=test";
-            try {
-                if (null == appDomain.findObjectByDn(membershipDn)) {
-                    DefaultEntry membership = new DefaultEntry(new Dn(membershipDn));
-                    membership.add("objectClass", "groupOfNames");
-                    membership.add("cn", userId);
-                    membership.add("member", "uid=" + userId + ",ou=Users,dc=test");
-                    adapter.createObject(membership);
-                }
-            }
-            catch (org.apache.directory.api.ldap.model.exception.LdapException e) {
-                fail(e.getMessage());
-            }
 
             assertNotNull(appDomain.findObjectByDn(membershipDn));
             assertTrue(appDomain.globalGroupExists(groupId));
             assertFalse(appDomain.globalGroupExists("MissingGroup"));
             assertTrue(appDomain.isMemberOfGlobalGroup(userId, groupId));
 
-            Collection<String> members = appDomain.getUsersInGlobalGroup(groupId);
-            assertTrue(members.contains(userId));
+            Set<String> members = appDomain.getUsersInGlobalGroup(groupId);
+            assertEquals(Set.of(userId), members);
         }
         catch (ConfigurationException | DirectoryException e) {
             fail(e.getMessage());
@@ -115,23 +173,42 @@ public class LdapTest {
     @Test
     public void testRoleAssignmentAndLookup() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             String systemName = "Datastore";
-            if (!appDomain.systemExists(systemName)) {
-                appDomain.createSystem(systemName);
-            }
+            ensureSystemExists(appDomain, systemName);
 
             String userId = "tester";
             String roleId = "Reader";
             String participationDn = appDomain.assignUserToRole(userId, roleId, systemName);
             assertNotNull(appDomain.findObjectByDn(participationDn));
 
-            Collection<String> users = appDomain.getUsersInRole(roleId, systemName);
-            assertTrue(users.contains(userId));
+            Set<String> users = appDomain.getUsersInRole(roleId, systemName);
+            assertEquals(Set.of(userId), users);
 
-            Collection<String> roles = appDomain.getRolesInSystem(systemName);
-            assertTrue(roles.contains(roleId));
+            Set<String> roles = appDomain.getRolesInSystem(systemName);
+            assertEquals(Set.of(roleId), roles);
+        }
+        catch (ConfigurationException | DirectoryException | InvalidParameterException e) {
+            fail(e.getMessage());
+        }
+    }
+
+    @Test
+    public void testRoleAssignmentEscapesDnComponents() {
+        try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
+            ApplicationDomain appDomain = newDomain(adapter);
+
+            String systemName = "System, East";
+            ensureSystemExists(appDomain, systemName);
+
+            String userId = "tester";
+            String roleId = "Reader, Tier 1";
+            String participationDn = appDomain.assignUserToRole(userId, roleId, systemName);
+
+            assertNotNull(appDomain.findObjectByDn(participationDn));
+            assertTrue(appDomain.getUsersInRole(roleId, systemName).contains(userId));
+            assertTrue(appDomain.getRolesInSystem(systemName).contains(roleId));
         }
         catch (ConfigurationException | DirectoryException | InvalidParameterException e) {
             fail(e.getMessage());
@@ -141,20 +218,18 @@ public class LdapTest {
     @Test
     public void testGroupRoleAssignment() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             String systemName = "Datastore";
-            if (!appDomain.systemExists(systemName)) {
-                appDomain.createSystem(systemName);
-            }
+            ensureSystemExists(appDomain, systemName);
 
             String groupId = "Administrators";
             String roleId = "Administrator";
             String participationDn = appDomain.assignGroupToRole(groupId, roleId, systemName);
             assertNotNull(appDomain.findObjectByDn(participationDn));
 
-            Collection<String> users = appDomain.getUsersInRole(roleId, systemName);
-            assertTrue(users.contains(groupId));
+            Set<String> users = appDomain.getUsersInRole(roleId, systemName);
+            assertEquals(Set.of(groupId), users);
         }
         catch (ConfigurationException | DirectoryException | InvalidParameterException e) {
             fail(e.getMessage());
@@ -164,35 +239,21 @@ public class LdapTest {
     @Test
     public void testIndirectRoleAssignmentsViaGroup() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             String userId = "tester";
             String groupId = "Administrators";
             String systemName = "Datastore";
             String roleId = "Auditor";
 
-            String membershipDn = "cn=" + userId + ",ou=" + groupId + ",ou=Groups,dc=test";
-            try {
-                if (null == appDomain.findObjectByDn(membershipDn)) {
-                    DefaultEntry membership = new DefaultEntry(new Dn(membershipDn));
-                    membership.add("objectClass", "groupOfNames");
-                    membership.add("cn", userId);
-                    membership.add("member", "uid=" + userId + ",ou=Users,dc=test");
-                    adapter.createObject(membership);
-                }
-            }
-            catch (org.apache.directory.api.ldap.model.exception.LdapException e) {
-                fail(e.getMessage());
-            }
+            ensureUserInGroup(appDomain, adapter, userId, groupId);
 
-            if (!appDomain.systemExists(systemName)) {
-                appDomain.createSystem(systemName);
-            }
+            ensureSystemExists(appDomain, systemName);
             appDomain.assignGroupToRole(groupId, roleId, systemName);
 
-            Hashtable<String, java.util.HashSet<String>> roles = appDomain.groupsAndRolesAnalysis(userId);
-            assertTrue(roles.containsKey(systemName));
-            assertTrue(roles.get(systemName).contains(roleId));
+            Map<String, Set<String>> roles = appDomain.groupsAndRolesAnalysis(userId);
+            assertEquals(Set.of(systemName), roles.keySet());
+            assertEquals(Set.of(roleId), roles.get(systemName));
 
             String participationDn = LdapAdapter.compose(appDomain.groupInRoleDNTemplate, groupId, roleId, systemName);
             assertNotNull(appDomain.findObjectByDn(participationDn));
@@ -205,7 +266,7 @@ public class LdapTest {
     @Test
     public void testAssignUserToRoleWithMissingUserFails() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             assertThrows(
                 InvalidParameterException.class,
@@ -220,7 +281,7 @@ public class LdapTest {
     @Test
     public void testAssignGroupToRoleWithMissingGroupFails() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             assertThrows(
                 InvalidParameterException.class,
@@ -235,19 +296,17 @@ public class LdapTest {
     @Test
     public void testAssignUserToRoleIsIdempotent() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             String systemName = "IdempotentSystemUser";
-            if (!appDomain.systemExists(systemName)) {
-                appDomain.createSystem(systemName);
-            }
+            ensureSystemExists(appDomain, systemName);
 
             String userId = "tester";
             String roleId = "IdempotentRoleUser";
             appDomain.assignUserToRole(userId, roleId, systemName);
             appDomain.assignUserToRole(userId, roleId, systemName);
 
-            Collection<String> users = appDomain.getUsersInRole(roleId, systemName);
+            Set<String> users = appDomain.getUsersInRole(roleId, systemName);
             long occurrences = users.stream().filter(userId::equals).count();
             assertEquals(1, occurrences);
         }
@@ -259,19 +318,17 @@ public class LdapTest {
     @Test
     public void testAssignGroupToRoleIsIdempotent() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             String systemName = "IdempotentSystemGroup";
-            if (!appDomain.systemExists(systemName)) {
-                appDomain.createSystem(systemName);
-            }
+            ensureSystemExists(appDomain, systemName);
 
             String groupId = "Administrators";
             String roleId = "IdempotentRoleGroup";
             appDomain.assignGroupToRole(groupId, roleId, systemName);
             appDomain.assignGroupToRole(groupId, roleId, systemName);
 
-            Collection<String> users = appDomain.getUsersInRole(roleId, systemName);
+            Set<String> users = appDomain.getUsersInRole(roleId, systemName);
             long occurrences = users.stream().filter(groupId::equals).count();
             assertEquals(1, occurrences);
         }
@@ -283,7 +340,7 @@ public class LdapTest {
     @Test
     public void testFindObjectByDnReturnsNullWhenMissing() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             String missingDn = "cn=missing,ou=Users,dc=test";
             assertNull(appDomain.findObjectByDn(missingDn));
@@ -296,28 +353,14 @@ public class LdapTest {
     @Test
     public void testGetGlobalGroupsExcludesMembershipEntries() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             String userId = "tester";
             String groupId = "Administrators";
-            String membershipDn = "cn=" + userId + ",ou=" + groupId + ",ou=Groups,dc=test";
-            try {
-                if (null == appDomain.findObjectByDn(membershipDn)) {
-                    DefaultEntry membership = new DefaultEntry(new Dn(membershipDn));
-                    membership.add("objectClass", "groupOfNames");
-                    membership.add("cn", userId);
-                    membership.add("member", "uid=" + userId + ",ou=Users,dc=test");
-                    adapter.createObject(membership);
-                }
-            }
-            catch (org.apache.directory.api.ldap.model.exception.LdapException e) {
-                fail(e.getMessage());
-            }
+            ensureUserInGroup(appDomain, adapter, userId, groupId);
 
-            Collection<String> groups = appDomain.getGlobalGroups();
-            assertTrue(groups.contains("Administrators"));
-            assertTrue(groups.contains("Guests"));
-            assertFalse(groups.contains(userId));
+            Set<String> groups = appDomain.getGlobalGroups();
+            assertEquals(Set.of("Administrators", "Guests"), groups);
         }
         catch (ConfigurationException | DirectoryException e) {
             fail(e.getMessage());
@@ -327,20 +370,17 @@ public class LdapTest {
     @Test
     public void testGetRolesInSystemExcludesMembershipEntries() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             String systemName = "RolesListSystem";
-            if (!appDomain.systemExists(systemName)) {
-                appDomain.createSystem(systemName);
-            }
+            ensureSystemExists(appDomain, systemName);
 
             String userId = "tester";
             String roleId = "Observer";
             appDomain.assignUserToRole(userId, roleId, systemName);
 
-            Collection<String> roles = appDomain.getRolesInSystem(systemName);
-            assertTrue(roles.contains(roleId));
-            assertFalse(roles.contains(userId));
+            Set<String> roles = appDomain.getRolesInSystem(systemName);
+            assertEquals(Set.of(roleId), roles);
         }
         catch (ConfigurationException | DirectoryException | InvalidParameterException e) {
             fail(e.getMessage());
@@ -350,12 +390,10 @@ public class LdapTest {
     @Test
     public void testAssignGroupToRolePreventsDuplicateMembershipEntries() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             String systemName = "DedupSystem";
-            if (!appDomain.systemExists(systemName)) {
-                appDomain.createSystem(systemName);
-            }
+            ensureSystemExists(appDomain, systemName);
 
             String groupId = "Administrators";
             String roleId = "DedupRole";
@@ -373,16 +411,17 @@ public class LdapTest {
     }
 
     @Test
-    public void testCreateSystemWithInvalidNameFails() {
+    public void testCreateSystemEscapesDnComponents() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
-            assertThrows(
-                ConfigurationException.class,
-                () -> appDomain.createSystem("bad,system")
-            );
+            String systemName = "bad,system";
+            String systemDn = appDomain.createSystem(systemName);
+
+            assertEquals("ou=bad\\,system,ou=Systems,dc=test", systemDn);
+            assertTrue(appDomain.systemExists(systemName));
         }
-        catch (ConfigurationException e) {
+        catch (ConfigurationException | DirectoryException e) {
             fail(e.getMessage());
         }
     }
@@ -390,37 +429,22 @@ public class LdapTest {
     @Test
     public void testDirectAndIndirectRolesUnionWithoutDuplicates() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             String userId = "tester";
             String groupId = "Administrators";
             String systemName = "UnionSystem";
             String roleId = "UnionRole";
 
-            String membershipDn = "cn=" + userId + ",ou=" + groupId + ",ou=Groups,dc=test";
-            try {
-                if (null == appDomain.findObjectByDn(membershipDn)) {
-                    DefaultEntry membership = new DefaultEntry(new Dn(membershipDn));
-                    membership.add("objectClass", "groupOfNames");
-                    membership.add("cn", userId);
-                    membership.add("member", "uid=" + userId + ",ou=Users,dc=test");
-                    adapter.createObject(membership);
-                }
-            }
-            catch (org.apache.directory.api.ldap.model.exception.LdapException e) {
-                fail(e.getMessage());
-            }
+            ensureUserInGroup(appDomain, adapter, userId, groupId);
 
-            if (!appDomain.systemExists(systemName)) {
-                appDomain.createSystem(systemName);
-            }
+            ensureSystemExists(appDomain, systemName);
             appDomain.assignGroupToRole(groupId, roleId, systemName);
             appDomain.assignUserToRole(userId, roleId, systemName);
 
-            Hashtable<String, java.util.HashSet<String>> roles = appDomain.groupsAndRolesAnalysis(userId);
-            assertTrue(roles.containsKey(systemName));
-            assertTrue(roles.get(systemName).contains(roleId));
-            assertEquals(1, roles.get(systemName).stream().filter(roleId::equals).count());
+            Map<String, Set<String>> roles = appDomain.groupsAndRolesAnalysis(userId);
+            assertEquals(Set.of(systemName), roles.keySet());
+            assertEquals(Set.of(roleId), roles.get(systemName));
         }
         catch (ConfigurationException | DirectoryException | InvalidParameterException e) {
             fail(e.getMessage());
@@ -430,7 +454,7 @@ public class LdapTest {
     @Test
     public void testMultipleGroupsAndRolesAcrossSystems() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             String userId = "tester";
             String groupA = "Administrators";
@@ -440,43 +464,19 @@ public class LdapTest {
             String roleA = "RoleA";
             String roleB = "RoleB";
 
-            String membershipDnA = "cn=" + userId + ",ou=" + groupA + ",ou=Groups,dc=test";
-            String membershipDnB = "cn=" + userId + ",ou=" + groupB + ",ou=Groups,dc=test";
-            try {
-                if (null == appDomain.findObjectByDn(membershipDnA)) {
-                    DefaultEntry membership = new DefaultEntry(new Dn(membershipDnA));
-                    membership.add("objectClass", "groupOfNames");
-                    membership.add("cn", userId);
-                    membership.add("member", "uid=" + userId + ",ou=Users,dc=test");
-                    adapter.createObject(membership);
-                }
-                if (null == appDomain.findObjectByDn(membershipDnB)) {
-                    DefaultEntry membership = new DefaultEntry(new Dn(membershipDnB));
-                    membership.add("objectClass", "groupOfNames");
-                    membership.add("cn", userId);
-                    membership.add("member", "uid=" + userId + ",ou=Users,dc=test");
-                    adapter.createObject(membership);
-                }
-            }
-            catch (org.apache.directory.api.ldap.model.exception.LdapException e) {
-                fail(e.getMessage());
-            }
+            ensureUserInGroup(appDomain, adapter, userId, groupA);
+            ensureUserInGroup(appDomain, adapter, userId, groupB);
 
-            if (!appDomain.systemExists(systemA)) {
-                appDomain.createSystem(systemA);
-            }
-            if (!appDomain.systemExists(systemB)) {
-                appDomain.createSystem(systemB);
-            }
+            ensureSystemExists(appDomain, systemA);
+            ensureSystemExists(appDomain, systemB);
 
             appDomain.assignGroupToRole(groupA, roleA, systemA);
             appDomain.assignGroupToRole(groupB, roleB, systemB);
 
-            Hashtable<String, java.util.HashSet<String>> roles = appDomain.groupsAndRolesAnalysis(userId);
-            assertTrue(roles.containsKey(systemA));
-            assertTrue(roles.containsKey(systemB));
-            assertTrue(roles.get(systemA).contains(roleA));
-            assertTrue(roles.get(systemB).contains(roleB));
+            Map<String, Set<String>> roles = appDomain.groupsAndRolesAnalysis(userId);
+            assertEquals(Set.of(systemA, systemB), roles.keySet());
+            assertEquals(Set.of(roleA), roles.get(systemA));
+            assertEquals(Set.of(roleB), roles.get(systemB));
         }
         catch (ConfigurationException | DirectoryException | InvalidParameterException e) {
             fail(e.getMessage());
@@ -486,42 +486,15 @@ public class LdapTest {
     @Test
     public void testGroupMembershipWithoutRolesYieldsEmptyRoles() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             String userId = "noRoleUser";
             String groupId = "NoRoleGroup";
-            String userDn = "uid=" + userId + ",ou=Users,dc=test";
-            String groupDn = "ou=" + groupId + ",ou=Groups,dc=test";
-            String membershipDn = "cn=" + userId + "," + groupDn;
+            ensureGroupExists(appDomain, adapter, groupId);
+            ensureUserExists(appDomain, adapter, userId, "NoRole", "User");
+            ensureUserInGroup(appDomain, adapter, userId, groupId);
 
-            try {
-                if (null == appDomain.findObjectByDn(groupDn)) {
-                    DefaultEntry groupEntry = new DefaultEntry(new Dn(groupDn));
-                    groupEntry.add("objectClass", "organizationalUnit");
-                    groupEntry.add("ou", groupId);
-                    adapter.createObject(groupEntry);
-                }
-                if (null == appDomain.findObjectByDn(userDn)) {
-                    DefaultEntry userEntry = new DefaultEntry(new Dn(userDn));
-                    userEntry.add("objectClass", "top", "inetOrgPerson", "organizationalPerson", "person");
-                    userEntry.add("uid", userId);
-                    userEntry.add("cn", "NoRole");
-                    userEntry.add("sn", "User");
-                    adapter.createObject(userEntry);
-                }
-                if (null == appDomain.findObjectByDn(membershipDn)) {
-                    DefaultEntry membership = new DefaultEntry(new Dn(membershipDn));
-                    membership.add("objectClass", "groupOfNames");
-                    membership.add("cn", userId);
-                    membership.add("member", userDn);
-                    adapter.createObject(membership);
-                }
-            }
-            catch (org.apache.directory.api.ldap.model.exception.LdapException e) {
-                fail(e.getMessage());
-            }
-
-            Hashtable<String, java.util.HashSet<String>> roles = appDomain.groupsAndRolesAnalysis(userId);
+            Map<String, Set<String>> roles = appDomain.groupsAndRolesAnalysis(userId);
             assertTrue(roles.isEmpty());
         }
         catch (ConfigurationException | DirectoryException | InvalidParameterException e) {
@@ -532,35 +505,15 @@ public class LdapTest {
     @Test
     public void testMultipleUsersInGlobalGroup() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             String groupId = "Administrators";
+            ensureUserExists(appDomain, adapter, "second", "Second", "User");
+            ensureUserInGroup(appDomain, adapter, "tester", groupId);
+            ensureUserInGroup(appDomain, adapter, "second", groupId);
 
-            String testerMembershipDn = "cn=tester,ou=" + groupId + ",ou=Groups,dc=test";
-            String otherMembershipDn = "cn=second,ou=" + groupId + ",ou=Groups,dc=test";
-            try {
-                if (null == appDomain.findObjectByDn(testerMembershipDn)) {
-                    DefaultEntry membership = new DefaultEntry(new Dn(testerMembershipDn));
-                    membership.add("objectClass", "groupOfNames");
-                    membership.add("cn", "tester");
-                    membership.add("member", "uid=tester,ou=Users,dc=test");
-                    adapter.createObject(membership);
-                }
-                if (null == appDomain.findObjectByDn(otherMembershipDn)) {
-                    DefaultEntry membership = new DefaultEntry(new Dn(otherMembershipDn));
-                    membership.add("objectClass", "groupOfNames");
-                    membership.add("cn", "second");
-                    membership.add("member", "uid=tester,ou=Users,dc=test");
-                    adapter.createObject(membership);
-                }
-            }
-            catch (org.apache.directory.api.ldap.model.exception.LdapException e) {
-                fail(e.getMessage());
-            }
-
-            Collection<String> members = appDomain.getUsersInGlobalGroup(groupId);
-            assertTrue(members.contains("tester"));
-            assertTrue(members.contains("second"));
+            Set<String> members = appDomain.getUsersInGlobalGroup(groupId);
+            assertEquals(Set.of("tester", "second"), members);
         }
         catch (ConfigurationException | DirectoryException e) {
             fail(e.getMessage());
@@ -570,25 +523,25 @@ public class LdapTest {
     @Test
     public void testIsMemberOfGlobalGroupWithOuDnInput() {
         try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
-            ApplicationDomain appDomain = new ApplicationDomain(domainConfig(), adapter);
+            ApplicationDomain appDomain = newDomain(adapter);
 
             String userId = "tester";
             String groupId = "Administrators";
-            String membershipDn = "cn=" + userId + ",ou=" + groupId + ",ou=Groups,dc=test";
-            try {
-                if (null == appDomain.findObjectByDn(membershipDn)) {
-                    DefaultEntry membership = new DefaultEntry(new Dn(membershipDn));
-                    membership.add("objectClass", "groupOfNames");
-                    membership.add("cn", userId);
-                    membership.add("member", "uid=" + userId + ",ou=Users,dc=test");
-                    adapter.createObject(membership);
-                }
-            }
-            catch (org.apache.directory.api.ldap.model.exception.LdapException e) {
-                fail(e.getMessage());
-            }
+            ensureUserInGroup(appDomain, adapter, userId, groupId);
 
             assertTrue(appDomain.isMemberOfGlobalGroup(userId, "ou=" + groupId + ",ou=Groups,dc=test"));
+        }
+        catch (ConfigurationException | DirectoryException e) {
+            fail(e.getMessage());
+        }
+    }
+
+    @Test
+    public void testGetRolesInMissingSystemReturnsEmptySet() {
+        try (LdapAdapter adapter = new LdapAdapter(adapterConfig())) {
+            ApplicationDomain appDomain = newDomain(adapter);
+
+            assertEquals(Set.of(), appDomain.getRolesInSystem("MissingSystem"));
         }
         catch (ConfigurationException | DirectoryException e) {
             fail(e.getMessage());

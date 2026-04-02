@@ -17,27 +17,24 @@
  */
 package org.gautelis;
 
-import org.junit.jupiter.api.extension.AfterAllCallback;
-import org.junit.jupiter.api.extension.BeforeAllCallback;
+import org.junit.jupiter.api.extension.AfterEachCallback;
+import org.junit.jupiter.api.extension.BeforeEachCallback;
 import org.junit.jupiter.api.extension.ExtensionContext;
 
-class LocalLdapServerExtension implements BeforeAllCallback, AfterAllCallback {
-    private static final LocalLdapServer SERVER = new LocalLdapServer();
-    private static boolean started = false;
+class LocalLdapServerExtension implements BeforeEachCallback, AfterEachCallback {
+    private LocalLdapServer server;
 
     @Override
-    public void beforeAll(ExtensionContext context) throws Exception {
-        if (!started) {
-            SERVER.start();
-            started = true;
-        }
+    public void beforeEach(ExtensionContext context) throws Exception {
+        server = new LocalLdapServer();
+        server.start();
     }
 
     @Override
-    public void afterAll(ExtensionContext context) throws Exception {
-        if (started) {
-            SERVER.stop();
-            started = false;
+    public void afterEach(ExtensionContext context) throws Exception {
+        if (server != null) {
+            server.stop();
+            server = null;
         }
     }
 }

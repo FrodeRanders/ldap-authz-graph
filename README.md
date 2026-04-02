@@ -61,8 +61,8 @@ The union of (2) and (3) yields **effective roles per system**.
 The central entry point is `ApplicationDomain`, which:
 - creates systems (`createSystem`)
 - assigns users/groups to roles (`assignUserToRole`, `assignGroupToRole`)
-- enumerates systems, roles, and groups
-- computes effective memberships and roles (direct + via groups)
+- enumerates systems, roles, and groups as sets
+- computes effective memberships and roles (direct + via groups) as a map from system id to role ids
 
 ### Configuration keys (examples)
 
@@ -74,6 +74,12 @@ You can adapt the directory structure via templates and contexts:
 - `LDAP_ROLE_DN_TEMPLATE` (default: `ou=%s,ou=Roles,ou=%s,ou=Systems,dc=test`)
 - `LDAP_USER_IN_ROLE_DN_TEMPLATE` (default: `cn=%s,ou=%s,ou=Roles,ou=%s,ou=Systems,dc=test`)
 - `LDAP_GROUP_DN_TEMPLATE` (default: `ou=%s,ou=Groups,dc=test`)
+- `LDAP_POOL_MAX_TOTAL` (default: `8`)
+- `LDAP_POOL_MAX_IDLE` (default: `8`)
+- `LDAP_POOL_MIN_IDLE` (default: `0`)
+- `LDAP_POOL_TEST_ON_BORROW` (default: `true`)
+- `LDAP_POOL_BLOCK_WHEN_EXHAUSTED` (default: `true`)
+- `LDAP_POOL_MAX_WAIT_MILLIS` (default: `30000`)
 
 ### Minimal usage sketch
 
@@ -97,6 +103,8 @@ domain.assignUserToRole("alice", "Reader", "Datastore");
 // Grant role via group
 // (Assumes group exists and alice is in that global Administrators group)
 domain.assignGroupToRole("Administrators", "Administrator", "Datastore");
+
+Map<String, Set<String>> effectiveRoles = domain.groupsAndRolesAnalysis("alice");
 ```
 
 ## Outcome
@@ -137,16 +145,29 @@ cn=<principalId>,ou=<roleId>,ou=Roles,ou=<systemName>,ou=Systems,dc=...
 
 ## Effective access
 
-`ApplicationDomain::groupsAndRolesAnalysis` calculates effective access.
+`ApplicationDomain::groupsAndRolesAnalysis` calculates effective access and returns `Map<String, Set<String>>`.
 
 Given user-ID and user-DN, `groupsAndRolesAnalysis` computes:
 1.	**Global groups**: deep search under groups-context for `(&(objectClass=groupOfNames)(member=<userDn>))`. Extracts group-id from the DN structure.
 2.	**Direct roles**: deep search under systems-context using the same `member=<userDn>` filter. Extracts system-name and role-name from DN structure.
 3.	**Indirect roles via groups**: builds an OR filter of the user’s group DNs as `member=<groupDn>` and deep searches under systems-context. Extracts system-name and role-name again.
 
-Net result: 
+Net result:
 
 `effective roles per system` = `direct roles` ∪ `roles granted to any global group the user belongs to`.
+
+## Validation behavior
+
+`ApplicationDomain` validates key configuration values during construction:
+- required contexts and attribute names must be non-empty
+- DN templates must contain the expected number of `%s` markers
+- supplied DN components are escaped before use
+- LDAP filter values are escaped before searches are issued
+
+`LdapAdapter` also validates connection-pool configuration during construction:
+- pool sizes must be numeric and internally consistent
+- borrow validation and blocking flags must be valid booleans
+- wait timeout must be a non-negative integer number of milliseconds
 
 ## Testing
 

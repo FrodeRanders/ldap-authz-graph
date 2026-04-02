@@ -39,6 +39,9 @@ import java.util.*;
  */
 public class ApplicationDomain {
     static final Logger log = LoggerFactory.getLogger(ApplicationDomain.class);
+    private static final int ONE_COMPONENT = 1;
+    private static final int TWO_COMPONENTS = 2;
+    private static final int THREE_COMPONENTS = 3;
 
 
     /**
@@ -315,7 +318,7 @@ public class ApplicationDomain {
     public ApplicationDomain(Map<String, String> config) throws ConfigurationException {
         this(config, new LdapAdapter(config));
     }
-    public ApplicationDomain(Map<String, String> config, LdapAdapter adapter) {
+    public ApplicationDomain(Map<String, String> config, LdapAdapter adapter) throws ConfigurationException {
         this.adapter = adapter;
 
         // === Init application specifics ===
@@ -406,6 +409,58 @@ public class ApplicationDomain {
         // -- Search filter for finding roles in a specific archive --
         //--------------------------------------------------------------------------
         roleSearchFilter = config.getOrDefault(LDAP_ROLE_SEARCH_FILTER, "(ou=*)");
+
+        validateConfiguration();
+    }
+
+    private void validateConfiguration() throws ConfigurationException {
+        requireText("user object class", userObjectClass);
+        requireText("membership object class", membershipObjectClass);
+        requireText("user id attribute", userIdAttribute);
+        requireText("membership attribute", membershipAttribute);
+        requireText("group id attribute", groupIdAttribute);
+        requireText("system name attribute", systemNameAttribute);
+        requireText("users context", usersContext);
+        requireText("groups context", groupsContext);
+        requireText("systems context", systemsContext);
+
+        validateTemplate(LDAP_ROLE_DN_TEMPLATE, roleDNTemplate, TWO_COMPONENTS);
+        validateTemplate(LDAP_GROUP_DN_TEMPLATE, groupDNTemplate, ONE_COMPONENT);
+        validateTemplate(LDAP_USER_IN_ROLE_DN_TEMPLATE, userInRoleDNTemplate, THREE_COMPONENTS);
+        validateTemplate(LDAP_GROUP_IN_ROLE_DN_TEMPLATE, groupInRoleDNTemplate, THREE_COMPONENTS);
+        validateTemplate(LDAP_USER_IN_GROUP_DN_TEMPLATE, userInGroupDNTemplate, TWO_COMPONENTS);
+        validateTemplate(LDAP_SYSTEM_DN_TEMPLATE, systemDNTemplate, ONE_COMPONENT);
+        validateTemplate(LDAP_ROLES_DN_TEMPLATE, rolesDNTemplate, ONE_COMPONENT);
+        validateTemplate(LDAP_USER_DN_TEMPLATE, userDNTemplate, ONE_COMPONENT);
+        validateTemplate(LDAP_FOREIGN_USER_DN_TEMPLATE, foreignUserDNTemplate, TWO_COMPONENTS);
+        validateTemplate(LDAP_FOREIGN_DOMAIN_DN_TEMPLATE, foreignDomainDNTemplate, ONE_COMPONENT);
+    }
+
+    private static void requireText(String label, String value) throws ConfigurationException {
+        if (value == null || value.isBlank()) {
+            throw new ConfigurationException("No " + label + " was provided");
+        }
+    }
+
+    private static void validateTemplate(String key, String template, int expectedComponents) throws ConfigurationException {
+        requireText(key, template);
+        int actualComponents = countMarkers(template);
+        if (actualComponents != expectedComponents) {
+            throw new ConfigurationException(
+                    "Illegal template for " + key + ": expected " + expectedComponents +
+                    " %s marker(s), found " + actualComponents
+            );
+        }
+    }
+
+    private static int countMarkers(String template) {
+        int count = 0;
+        int idx = 0;
+        while ((idx = template.indexOf("%s", idx)) >= 0) {
+            count++;
+            idx += 2;
+        }
+        return count;
     }
 
     /**
@@ -544,10 +599,10 @@ public class ApplicationDomain {
     private boolean participationExistsUnderRole(final String roleDn, final String principalId, final String principalDn)
             throws ConfigurationException, DirectoryException {
 
-        String filter = LdapAdapter.compose(
-                "(&(objectClass=%s)(cn=%s)(%s=%s))",
-                membershipObjectClass, principalId, membershipAttribute, principalDn
-        );
+        String filter =
+                "(&(objectClass=" + LdapAdapter.escapeFilterValue(membershipObjectClass) + ")" +
+                "(cn=" + LdapAdapter.escapeFilterValue(principalId) + ")" +
+                "(" + membershipAttribute + "=" + LdapAdapter.escapeFilterValue(principalDn) + "))";
         SearchRequest req = adapter.shallowSearchWithFilter(roleDn, filter, "cn", membershipAttribute);
         return adapter.findObject(req) != null;
     }
@@ -636,7 +691,9 @@ public class ApplicationDomain {
      * @return The distinguished name (DN) of the user if user exists in LDAP, null otherwise
      */
     public String findUserDn(final String userId) throws ConfigurationException, DirectoryException {
-        final String filter = LdapAdapter.compose("(&(objectClass=%s)(%s=%s))", userObjectClass, userIdAttribute, userId);
+        final String filter =
+                "(&(objectClass=" + LdapAdapter.escapeFilterValue(userObjectClass) + ")" +
+                "(" + userIdAttribute + "=" + LdapAdapter.escapeFilterValue(userId) + "))";
         SearchRequest req = adapter.shallowSearchWithFilter(usersContext, filter, userIdAttribute);
 
         Entry user = adapter.findObject(req);
@@ -699,7 +756,7 @@ public class ApplicationDomain {
         String dn;
         if (groupName.startsWith("ou=")) {
             // Whole ou= stored in database
-            dn = LdapAdapter.compose("cn=%s,%s", userId, groupName);
+            dn = "cn=" + LdapAdapter.escapeDnValue(userId) + "," + groupName;
         } else {
             // "cn=<userName>,ou=<groupName>,ou=Groups,dc=test"
             dn = LdapAdapter.compose(userInGroupDNTemplate, userId, groupName);
@@ -713,15 +770,18 @@ public class ApplicationDomain {
 
 
 
-    public Collection<String> getUsersInGlobalGroup(final String groupName) throws ConfigurationException, DirectoryException {
-        Collection<String> users = new LinkedList<>();
+    /**
+     * Returns the user identifiers that are direct members of a global group.
+     */
+    public Set<String> getUsersInGlobalGroup(final String groupName) throws ConfigurationException, DirectoryException {
+        Set<String> users = new LinkedHashSet<>();
 
         //------------------------------------------------------------------------
         // Global groups live under "ou=Groups, dc=test".
         // Strategy: Get all entries directly thereunder
         //------------------------------------------------------------------------
         String dn = LdapAdapter.compose(groupDNTemplate, groupName);
-        final String filter = LdapAdapter.compose("(objectClass=%s)", membershipObjectClass);
+        final String filter = "(objectClass=" + LdapAdapter.escapeFilterValue(membershipObjectClass) + ")";
         SearchRequest req = adapter.shallowSearchWithFilter(dn, filter, "*");
         Collection<Entry> _users = adapter.findObjects(req);
         for (Entry user : _users) {
@@ -746,8 +806,12 @@ public class ApplicationDomain {
         return users;
     }
 
-    public Collection<String> getUsersInRole(final String roleName, final String systemName) throws ConfigurationException, DirectoryException {
-        Collection<String> users = new LinkedList<>();
+    /**
+     * Returns the principals assigned directly to a role.
+     * The returned set may contain both user ids and group ids.
+     */
+    public Set<String> getUsersInRole(final String roleName, final String systemName) throws ConfigurationException, DirectoryException {
+        Set<String> users = new LinkedHashSet<>();
 
         //------------------------------------------------------------------------
         // Roles live under "ou=<roleName>, ou=Roles, ou=<systemName>, ou=Systems, dc=test"
@@ -756,7 +820,7 @@ public class ApplicationDomain {
         //------------------------------------------------------------------------
 
         String dn = LdapAdapter.compose(roleDNTemplate, roleName, systemName);
-        final String filter = LdapAdapter.compose("(objectClass=%s)", membershipObjectClass);
+        final String filter = "(objectClass=" + LdapAdapter.escapeFilterValue(membershipObjectClass) + ")";
         SearchRequest req = adapter.shallowSearchWithFilter(dn, filter, "*");
         Collection<Entry> _users = adapter.findObjects(req);
         for (Entry user : _users) {
@@ -783,10 +847,10 @@ public class ApplicationDomain {
 
 
     /**
-     * Returns the groupIds in the searched LDAP context
+     * Returns the configured global group identifiers.
      */
-    public Collection<String> getGlobalGroups() throws ConfigurationException, DirectoryException {
-        Collection<String> groups = new LinkedList<>();
+    public Set<String> getGlobalGroups() throws ConfigurationException, DirectoryException {
+        Set<String> groups = new LinkedHashSet<>();
 
         //------------------------------------------------------------------------
         // Global groups live under "ou=Groups, dc=test".
@@ -814,8 +878,11 @@ public class ApplicationDomain {
         return groups;
     }
 
-    public Collection<String> getSystems() throws ConfigurationException, DirectoryException {
-        Collection<String> systems = new LinkedList<>();
+    /**
+     * Returns the configured system identifiers.
+     */
+    public Set<String> getSystems() throws ConfigurationException, DirectoryException {
+        Set<String> systems = new LinkedHashSet<>();
 
         //------------------------------------------------------------------------
         // Systems live under "ou=Systems, dc=test".
@@ -832,12 +899,10 @@ public class ApplicationDomain {
     }
 
     /**
-     * Returns the groupids in the searched LDAP context
-     *
-     * @return a Collection of roles
+     * Returns the role identifiers configured for a system.
      */
-    public Collection<String> getRolesInSystem(final String systemName) throws ConfigurationException, DirectoryException{
-        Collection<String> roles = new LinkedList<>();
+    public Set<String> getRolesInSystem(final String systemName) throws ConfigurationException, DirectoryException{
+        Set<String> roles = new LinkedHashSet<>();
 
         //------------------------------------------------------------------------
         // Roles of an systems live under "ou=Roles, ou=<systemName>, ou=Systems, dc=test".
@@ -861,8 +926,8 @@ public class ApplicationDomain {
     private void groupsAndRolesAnalysis(
             final String userId,
             final String userDn,
-            final HashSet<String> globalGroups,
-            Hashtable<String, HashSet<String>> roles
+            final Set<String> globalGroups,
+            Map<String, Set<String>> roles
     ) throws ConfigurationException, DirectoryException {
 
         /* --------------------------------------------------------------------------------
@@ -875,7 +940,9 @@ public class ApplicationDomain {
          * -------------------------------------------------------------------------------*/
         log.trace("Analyzing global group memberships of user \"{}\" ({})", userId, userDn);
 
-        final String filter = LdapAdapter.compose("(&(objectClass=%s)(%s=%s))", membershipObjectClass, membershipAttribute, userDn);
+        final String filter =
+                "(&(objectClass=" + LdapAdapter.escapeFilterValue(membershipObjectClass) + ")" +
+                "(" + membershipAttribute + "=" + LdapAdapter.escapeFilterValue(userDn) + "))";
 
         SearchRequest req = adapter.deepSearchWithFilter(groupsContext, filter, "*");
         Collection<Entry> memberships = adapter.findObjects(req);
@@ -925,7 +992,7 @@ public class ApplicationDomain {
             String systemName = _systemName.getString();
 
             //
-            HashSet<String> _roles = roles.computeIfAbsent(systemName, k -> new HashSet<>());
+            Set<String> _roles = roles.computeIfAbsent(systemName, k -> new LinkedHashSet<>());
             _roles.add(roleName);
 
             log.trace("User \"{}\" ({}) participates directly in role \"{}\" in system \"{}\"", userId, userDn, roleName, systemName);
@@ -946,14 +1013,20 @@ public class ApplicationDomain {
         int numberOfGroups = globalGroups.size();
         if (numberOfGroups > 0) {
 
-            StringBuilder groupFilter = new StringBuilder("(&(objectClass=").append(membershipObjectClass).append(")");
+            StringBuilder groupFilter = new StringBuilder("(&(objectClass=")
+                    .append(LdapAdapter.escapeFilterValue(membershipObjectClass))
+                    .append(")");
             if (numberOfGroups > 1) {
                 groupFilter.append("(|");
             }
             for (String groupId : globalGroups) {
                 log.trace("Looking for group membership \"{}\" in roles", groupId);
                 String groupDn = LdapAdapter.compose(groupDNTemplate, groupId);
-                groupFilter.append("(").append(membershipAttribute).append("=").append(groupDn).append(")");
+                groupFilter.append("(")
+                        .append(membershipAttribute)
+                        .append("=")
+                        .append(LdapAdapter.escapeFilterValue(groupDn))
+                        .append(")");
             }
             if (numberOfGroups > 1) {
                 groupFilter.append(")");
@@ -981,7 +1054,7 @@ public class ApplicationDomain {
                 String systemName = _systemName.getString();
 
                 //
-                HashSet<String> _roles = roles.computeIfAbsent(systemName, k -> new HashSet<>());
+                Set<String> _roles = roles.computeIfAbsent(systemName, k -> new LinkedHashSet<>());
                 _roles.add(roleName);
 
                 log.trace("User \"{}\" ({}) participates indirectly in role \"{}\" in system \"{}\" through a group membership", userId, userDn, roleName, systemName);
@@ -996,9 +1069,9 @@ public class ApplicationDomain {
      * Computes effective roles for a user, including roles granted via global groups.
      *
      * @param userId the user identifier
-     * @return roles per system
+     * @return effective roles per system
      */
-    public Hashtable<String, HashSet<String>> groupsAndRolesAnalysis(final String userId)
+    public Map<String, Set<String>> groupsAndRolesAnalysis(final String userId)
             throws ConfigurationException, DirectoryException, InvalidParameterException {
         String userDn = findUserDn(userId);
         if (null == userDn) {
@@ -1006,8 +1079,8 @@ public class ApplicationDomain {
             throw new InvalidParameterException(info);
         }
 
-        HashSet<String> globalGroups = new HashSet<>();
-        Hashtable<String, HashSet<String>> roles = new Hashtable<>();
+        Set<String> globalGroups = new LinkedHashSet<>();
+        Map<String, Set<String>> roles = new LinkedHashMap<>();
         groupsAndRolesAnalysis(userId, userDn, globalGroups, roles);
         return roles;
     }

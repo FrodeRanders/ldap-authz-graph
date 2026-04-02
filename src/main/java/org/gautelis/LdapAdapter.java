@@ -24,8 +24,10 @@ import org.apache.directory.api.ldap.model.entry.Value;
 import org.apache.directory.api.ldap.model.exception.LdapException;
 import org.apache.directory.api.ldap.model.exception.LdapInvalidDnException;
 import org.apache.directory.api.ldap.model.exception.LdapSchemaViolationException;
+import org.apache.directory.api.ldap.model.filter.FilterEncoder;
 import org.apache.directory.api.ldap.model.message.*;
 import org.apache.directory.api.ldap.model.name.Dn;
+import org.apache.directory.api.ldap.model.name.Rdn;
 import org.apache.directory.ldap.client.api.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,6 +44,123 @@ import java.util.Objects;
  */
 public class LdapAdapter implements AutoCloseable {
     static final Logger log = LoggerFactory.getLogger(LdapAdapter.class);
+
+    interface PooledExecutor {
+        <T> T withConnection(ConnectionOperation<T> operation) throws DirectoryException;
+        void close();
+    }
+
+    interface ConnectionManager {
+        LdapConnection getConnection() throws Exception;
+        void releaseConnection(LdapConnection connection) throws Exception;
+        void close();
+    }
+
+    interface ConnectionOperation<T> {
+        T execute(LdapConnection connection) throws Exception;
+    }
+
+    private static final class PoolConnectionManager implements ConnectionManager {
+        private final LdapConnectionPool pool;
+
+        private PoolConnectionManager(LdapConnectionPool pool) {
+            this.pool = pool;
+        }
+
+        @Override
+        public LdapConnection getConnection() throws Exception {
+            return pool.getConnection();
+        }
+
+        @Override
+        public void releaseConnection(LdapConnection connection) throws Exception {
+            pool.releaseConnection(connection);
+        }
+
+        @Override
+        public void close() {
+            pool.close();
+        }
+    }
+
+    private static final class ManagedPooledExecutor implements PooledExecutor {
+        private final ConnectionManager connectionManager;
+
+        private ManagedPooledExecutor(ConnectionManager connectionManager) {
+            this.connectionManager = connectionManager;
+        }
+
+        @Override
+        public <T> T withConnection(ConnectionOperation<T> operation) throws DirectoryException {
+            LdapConnection connection = null;
+            DirectoryException pending = null;
+            T result = null;
+            try {
+                connection = connectionManager.getConnection();
+                result = operation.execute(connection);
+            }
+            catch (DirectoryException e) {
+                pending = e;
+            }
+            catch (Exception e) {
+                pending = mapException(e);
+            }
+            finally {
+                if (connection != null) {
+                    releaseConnection(connection, pending);
+                }
+            }
+            if (pending != null) {
+                throw pending;
+            }
+            return result;
+        }
+
+        @Override
+        public void close() {
+            connectionManager.close();
+        }
+
+        private void releaseConnection(LdapConnection connection, DirectoryException pending) throws DirectoryException {
+            try {
+                connectionManager.releaseConnection(connection);
+            }
+            catch (Exception e) {
+                String info = "Could not release connection back to pool: " + e.getMessage();
+                DirectoryConnectionException releaseFailure = new DirectoryConnectionException(info, e);
+                if (pending != null) {
+                    pending.addSuppressed(releaseFailure);
+                    throw pending;
+                }
+                throw releaseFailure;
+            }
+        }
+
+        private DirectoryException mapException(Exception e) {
+            if (e instanceof LdapInvalidDnException invalidDn) {
+                Dn dn = invalidDn.getResolvedDn();
+                String info = "Invalid DN: " + (dn != null ? dn.toString() : invalidDn.getMessage());
+                return new DirectoryWriteException(info, invalidDn);
+            }
+            if (e instanceof LdapSchemaViolationException schemaViolation) {
+                String info = "Could not create object since it violates the schema: ";
+                Dn dn = schemaViolation.getResolvedDn();
+                if (dn != null && !dn.getName().isEmpty()) {
+                    info += "dn=\"" + dn + "\", ";
+                }
+                ResultCodeEnum rc = schemaViolation.getResultCode();
+                info += "result-code=" + rc.getResultCode() + " (" + rc.getMessage() + "): ";
+                Throwable cause = schemaViolation.getCause();
+                info += Objects.requireNonNullElse(cause, schemaViolation).getMessage();
+                return new DirectoryWriteException(info, schemaViolation);
+            }
+            if (e instanceof LdapException ldapException) {
+                return new DirectoryException(ldapException.getMessage(), ldapException) { };
+            }
+            String info = e.getMessage();
+            return new DirectoryException(info, e) { };
+        }
+    }
 
     /**
      * LDAP server host name (key).
@@ -88,8 +207,38 @@ public class LdapAdapter implements AutoCloseable {
      */
     public static final String LDAP_READER_CREDENTIALS = "LDAP_READER_CREDENTIALS";
 
+    /**
+     * Maximum number of pooled LDAP connections.
+     */
+    public static final String LDAP_POOL_MAX_TOTAL = "LDAP_POOL_MAX_TOTAL";
+
+    /**
+     * Maximum number of idle pooled LDAP connections.
+     */
+    public static final String LDAP_POOL_MAX_IDLE = "LDAP_POOL_MAX_IDLE";
+
+    /**
+     * Minimum number of idle pooled LDAP connections.
+     */
+    public static final String LDAP_POOL_MIN_IDLE = "LDAP_POOL_MIN_IDLE";
+
+    /**
+     * Whether to validate pooled connections when borrowed.
+     */
+    public static final String LDAP_POOL_TEST_ON_BORROW = "LDAP_POOL_TEST_ON_BORROW";
+
+    /**
+     * Whether callers should wait when the pool is exhausted.
+     */
+    public static final String LDAP_POOL_BLOCK_WHEN_EXHAUSTED = "LDAP_POOL_BLOCK_WHEN_EXHAUSTED";
+
+    /**
+     * Maximum time to wait for a pooled connection in milliseconds.
+     */
+    public static final String LDAP_POOL_MAX_WAIT_MILLIS = "LDAP_POOL_MAX_WAIT_MILLIS";
+
     //
-    private final LdapConnectionPool pool;
+    private final PooledExecutor executor;
     private final String host;
     private final int port;
 
@@ -145,14 +294,99 @@ public class LdapAdapter implements AutoCloseable {
 
         //
         DefaultPoolableLdapConnectionFactory factory = new DefaultPoolableLdapConnectionFactory( ldapConfig );
-        this.pool = new LdapConnectionPool( factory );
-        pool.setTestOnBorrow( true );
+        LdapConnectionPool pool = new LdapConnectionPool( factory );
+        configurePool(pool, config);
+        this.executor = new ManagedPooledExecutor(new PoolConnectionManager(pool));
+    }
+
+    LdapAdapter(ConnectionManager connectionManager) {
+        this.executor = new ManagedPooledExecutor(connectionManager);
+        this.host = "localhost";
+        this.port = 389;
+    }
+
+    LdapAdapter(PooledExecutor executor) {
+        this.executor = executor;
+        this.host = "localhost";
+        this.port = 389;
     }
 
     public void close() {
-        if (null != pool) {
-            pool.close();
+        if (null != executor) {
+            executor.close();
         }
+    }
+
+    private void configurePool(LdapConnectionPool pool, Map<String, String> config) throws ConfigurationException {
+        int maxTotal = parseInteger(config, LDAP_POOL_MAX_TOTAL, 8);
+        int maxIdle = parseInteger(config, LDAP_POOL_MAX_IDLE, 8);
+        int minIdle = parseInteger(config, LDAP_POOL_MIN_IDLE, 0);
+        long maxWaitMillis = parseLong(config, LDAP_POOL_MAX_WAIT_MILLIS, 30000L);
+        boolean testOnBorrow = parseBoolean(config, LDAP_POOL_TEST_ON_BORROW, true);
+        boolean blockWhenExhausted = parseBoolean(config, LDAP_POOL_BLOCK_WHEN_EXHAUSTED, true);
+
+        if (maxTotal <= 0) {
+            throw new ConfigurationException("Illegal LDAP pool max total: " + maxTotal);
+        }
+        if (maxIdle < 0) {
+            throw new ConfigurationException("Illegal LDAP pool max idle: " + maxIdle);
+        }
+        if (minIdle < 0) {
+            throw new ConfigurationException("Illegal LDAP pool min idle: " + minIdle);
+        }
+        if (minIdle > maxIdle) {
+            throw new ConfigurationException("Illegal LDAP pool idle bounds: min idle exceeds max idle");
+        }
+        if (maxIdle > maxTotal) {
+            throw new ConfigurationException("Illegal LDAP pool idle bounds: max idle exceeds max total");
+        }
+        if (maxWaitMillis < 0) {
+            throw new ConfigurationException("Illegal LDAP pool max wait millis: " + maxWaitMillis);
+        }
+
+        pool.setMaxTotal(maxTotal);
+        pool.setMaxIdle(maxIdle);
+        pool.setMinIdle(minIdle);
+        pool.setTestOnBorrow(testOnBorrow);
+        pool.setBlockWhenExhausted(blockWhenExhausted);
+        pool.setMaxWaitMillis(maxWaitMillis);
+    }
+
+    private static int parseInteger(Map<String, String> config, String key, int defaultValue) throws ConfigurationException {
+        String value = config.get(key);
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Integer.parseInt(value);
+        }
+        catch (NumberFormatException e) {
+            throw new ConfigurationException("Illegal integer value for " + key + ": " + value);
+        }
+    }
+
+    private static long parseLong(Map<String, String> config, String key, long defaultValue) throws ConfigurationException {
+        String value = config.get(key);
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Long.parseLong(value);
+        }
+        catch (NumberFormatException e) {
+            throw new ConfigurationException("Illegal long value for " + key + ": " + value);
+        }
+    }
+
+    private static boolean parseBoolean(Map<String, String> config, String key, boolean defaultValue) throws ConfigurationException {
+        String value = config.get(key);
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        if ("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value)) {
+            return Boolean.parseBoolean(value);
+        }
+        throw new ConfigurationException("Illegal boolean value for " + key + ": " + value);
     }
 
     /**
@@ -169,65 +403,24 @@ public class LdapAdapter implements AutoCloseable {
     /**
      * An LDAP creation functor
      */
-    private interface Create {
+    interface Create {
         void createUsing(final LdapConnection connection) throws LdapException;
-    }
-
-    /**
-     * Create an object.
-     * <p/>
-     * @throws DirectoryException
-     */
-    private Entry createObject(Create call) throws DirectoryException {
-        LdapConnection connection = null;
-        try {
-            connection = pool.getConnection();
-            call.createUsing(connection);
-        }
-        catch (LdapInvalidDnException e) {
-            Dn dn = e.getResolvedDn();
-            String info = "Invalid DN: " + dn.toString();
-            throw new DirectoryWriteException(info, e);
-        }
-        catch (LdapSchemaViolationException e) {
-            String info = "Could not create object since it violates the schema: ";
-            Dn dn = e.getResolvedDn();
-            if (null != dn && !dn.getName().isEmpty()) {
-                info += "dn=\"" + dn.toString() + "\", ";
-            }
-            ResultCodeEnum rc = e.getResultCode();
-            info += "result-code=" + rc.getResultCode() + " (" + rc.getMessage() + "): ";
-            Throwable cause = e.getCause();
-            info += Objects.requireNonNullElse(cause, e).getMessage();
-            throw new DirectoryWriteException(info, e);
-        }
-        catch (Throwable t) {
-            String info = "Could not create object in directory: " + t.getMessage();
-            throw new DirectoryWriteException(info, t);
-        }
-        finally {
-            if (null != connection) {
-                try { pool.releaseConnection(connection); }
-                catch (Exception e) {
-                    String info = "Could not release connection back to pool: " + e.getMessage();
-                    throw new DirectoryConnectionException(info, e);
-                }
-            }
-        }
-        return null;
     }
 
     /**
      * Creates an object.
      */
     public void createObject(final DefaultEntry entry) throws DirectoryException {
-        createObject(connection -> connection.add(entry));
+        executeWrite("Could not create object in directory", connection -> {
+            connection.add(entry);
+            return null;
+        });
     }
 
     /**
      * An LDAP alteration functor
      */
-    private interface Alter {
+    interface Alter {
         ModifyResponse alterUsing(final LdapConnection connection) throws LdapException;
     }
 
@@ -237,24 +430,7 @@ public class LdapAdapter implements AutoCloseable {
      * @throws DirectoryException
      */
     private void alterObject(Alter call) throws DirectoryException {
-        LdapConnection connection = null;
-        try {
-            connection = pool.getConnection();
-            ModifyResponse response = call.alterUsing(connection);
-        }
-        catch (Throwable t) {
-            String info = "Could not alter object in directory: " + t.getMessage();
-            throw new DirectoryWriteException(info, t);
-        }
-        finally {
-            if (null != connection) {
-                try { pool.releaseConnection(connection); }
-                catch (Exception e) {
-                    String info = "Could not release connection back to pool: " + e.getMessage();
-                    throw new DirectoryConnectionException(info, e);
-                }
-            }
-        }
+        executeWrite("Could not alter object in directory", connection -> call.alterUsing(connection));
     }
 
     /**
@@ -268,7 +444,7 @@ public class LdapAdapter implements AutoCloseable {
     /**
      * An LDAP query functor
      */
-    private interface Query {
+    interface Query {
         SearchCursor queryUsing(final LdapConnection connection) throws LdapException;
     }
 
@@ -280,9 +456,7 @@ public class LdapAdapter implements AutoCloseable {
      * @throws DirectoryException
      */
     public Entry findObject(final Query call) throws DirectoryException {
-        LdapConnection connection = null;
-        try {
-            connection = pool.getConnection();
+        return executeRead("Could not find object in directory", connection -> {
             try (SearchCursor cursor = call.queryUsing(connection)) {
                 if (cursor.next()) {
                     if (cursor.isEntry())
@@ -290,20 +464,7 @@ public class LdapAdapter implements AutoCloseable {
                 }
                 return null; // None found
             }
-        }
-        catch (Throwable t) {
-            String info = "Could not find object in directory: " + t.getMessage();
-            throw new DirectoryReadException(info, t);
-        }
-        finally {
-            if (null != connection) {
-                try { pool.releaseConnection(connection); }
-                catch (Exception e) {
-                    String info = "Could not release connection back to pool: " + e.getMessage();
-                    throw new DirectoryConnectionException(info, e);
-                }
-            }
-        }
+        });
     }
 
     /**
@@ -314,31 +475,55 @@ public class LdapAdapter implements AutoCloseable {
      * @throws DirectoryException
      */
     private Collection<Entry> findObjects(final Query call) throws DirectoryException {
-        Collection<Entry> entries = new LinkedList<>();
-        LdapConnection connection = null;
-        try {
-            connection = pool.getConnection();
-            SearchCursor cursor = call.queryUsing(connection);
-            while (cursor.next()) {
-                if (cursor.isEntry()) {
-                    Entry entry = ((SearchResultEntry) cursor.get()).getEntry();
-                    entries.add(entry);
+        return executeRead("Could not find objects in directory", connection -> {
+            Collection<Entry> entries = new LinkedList<>();
+            try (SearchCursor cursor = call.queryUsing(connection)) {
+                while (cursor.next()) {
+                    if (cursor.isEntry()) {
+                        Entry entry = ((SearchResultEntry) cursor.get()).getEntry();
+                        entries.add(entry);
+                    }
                 }
             }
             return entries;
+        });
+    }
+
+    private <T> T executeRead(String failureMessage, ConnectionOperation<T> operation) throws DirectoryException {
+        try {
+            return executor.withConnection(operation);
         }
-        catch (Throwable t) {
-            String info = "Could not find objects in directory: " + t.getMessage();
-            throw new DirectoryReadException(info, t);
+        catch (DirectoryReadException e) {
+            throw e;
         }
-        finally {
-            if (null != connection) {
-                try { pool.releaseConnection(connection); }
-                catch (Exception e) {
-                    String info = "Could not release connection back to pool: " + e.getMessage();
-                    throw new DirectoryConnectionException(info, e);
-                }
+        catch (DirectoryConnectionException e) {
+            throw e;
+        }
+        catch (DirectoryException e) {
+            DirectoryReadException wrapped = new DirectoryReadException(failureMessage + ": " + e.getMessage(), e);
+            for (Throwable suppressed : e.getSuppressed()) {
+                wrapped.addSuppressed(suppressed);
             }
+            throw wrapped;
+        }
+    }
+
+    private <T> T executeWrite(String failureMessage, ConnectionOperation<T> operation) throws DirectoryException {
+        try {
+            return executor.withConnection(operation);
+        }
+        catch (DirectoryWriteException e) {
+            throw e;
+        }
+        catch (DirectoryConnectionException e) {
+            throw e;
+        }
+        catch (DirectoryException e) {
+            DirectoryWriteException wrapped = new DirectoryWriteException(failureMessage + ": " + e.getMessage(), e);
+            for (Throwable suppressed : e.getSuppressed()) {
+                wrapped.addSuppressed(suppressed);
+            }
+            throw wrapped;
         }
     }
 
@@ -460,7 +645,7 @@ public class LdapAdapter implements AutoCloseable {
             int idx = dn.indexOf("%s");
             if (idx >= 0) {
                 // substitute the component for this "%s"
-                dn.replace(idx, idx + /* length("%s") */ 2, component);
+                dn.replace(idx, idx + /* length("%s") */ 2, escapeDnValue(component));
             }
             else {
                 String info = "Mismatch between template \"" + template + "\" and the number of provided components: ";
@@ -470,7 +655,22 @@ public class LdapAdapter implements AutoCloseable {
             }
         }
 
+        if (dn.indexOf("%s") >= 0) {
+            String info = "Mismatch between template \"" + template + "\" and the number of provided components: ";
+            info += "There are fewer components than %s markers in the template";
+            log.error(info, new Exception("A synthetic exception to gain stack trace"));
+            throw new ConfigurationException(info);
+        }
+
         return dn.toString();
+    }
+
+    public static String escapeDnValue(String value) {
+        return Rdn.escapeValue(value);
+    }
+
+    public static String escapeFilterValue(String value) {
+        return FilterEncoder.encodeFilterValue(value);
     }
 }
 

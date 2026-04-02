@@ -57,8 +57,6 @@ public class LocalLdapServer {
     }
 
     public void start() throws Exception {
-        System.out.println("Starting LDAP server and service...");
-
         if (null != server) {
             return;
         }
@@ -163,13 +161,13 @@ public class LocalLdapServer {
             server.start();
 
         } catch (Throwable t) {
-            log.error("Failed to start LDAP server: {}", t.getMessage(), t);
+            String info = "Failed to start LDAP server: " + t.getMessage();
+            log.error(info, t);
+            throw new Exception(info, t);
         }
     }
 
     public void stop() throws Exception {
-        System.out.println("Stopping LDAP server and service...");
-
         if (null != server) {
             server.stop();
             server = null;
